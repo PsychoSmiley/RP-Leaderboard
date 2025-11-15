@@ -109,19 +109,19 @@ def api_call(prompt, model, max_tokens=4000, temp=0.7, endpoint=None):
         try:
             resp = requests.post(f"{use_endpoint}/chat/completions", headers=headers, json=data, timeout=120)
 
-            # Handle 4xx errors as model refusal (content policy), not infrastructure failure
+            # Handle 4xx errors as model-side refusal / bad request, not infra failure
             if 400 <= resp.status_code < 500:
+                status = resp.status_code
                 try:
                     err = resp.json()
-                    msg = err.get("error", {}).get("message") or str(err)
                 except Exception:
-                    msg = resp.text or f"HTTP {resp.status_code}"
+                    err = (resp.text or "").strip()
+                msg = f"HTTP {status} {str(err)[:120]}"
 
-                print(f"  🚫 Model refused ({resp.status_code}): {msg[:100]}")
+                print(f"  🚫 4xx client error (treated as model refusal): {msg}")
                 delay = RATE_LIMIT_DELAY_FREE if ':free' in model.lower() else RATE_LIMIT_DELAY_PAID
                 time.sleep(delay)
-                # Return refusal message so it can be evaluated (scores 0, doesn't count as API failure)
-                return f"[Content policy block: {msg[:50]}]"
+                return f"[client_error_{status}]"
 
             # For 5xx and success, use normal flow
             resp.raise_for_status()
