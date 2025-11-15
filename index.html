@@ -62,98 +62,202 @@ html{scroll-behavior:smooth}
 <body>
 <div class="container">
 <header>
-<h1>🎭 R/RP Leaderboard</h1>
-<p>LLM Roleplay Performance Benchmark</p>
+  <h1>🎭 R/RP Leaderboard</h1>
+  <p>LLM Roleplay Performance Benchmark</p>
 </header>
+
 <div class="stats">
-<span>Models Tested: <strong id="count">0</strong></span>
-<span>Last Updated: <strong id="updated">-</strong></span>
-<a href="#" id="github-link" target="_blank" rel="noopener">GitHub ↗</a>
+  <span>Models Tested: <strong id="count">0</strong></span>
+  <span>Last Updated: <strong id="updated">-</strong></span>
+  <a href="#" id="github-link" target="_blank" rel="noopener">GitHub ↗</a>
 </div>
+
 <div class="table-container">
-<table id="leaderboard">
-<thead>
-<tr>
-<th onclick="sort(0)" title="Click to sort">#</th>
-<th onclick="sort(1)" title="Click to sort">Model</th>
-<th onclick="sort(2)" title="Click to sort">Yes/No</th>
-<th onclick="sort(3)" title="Click to sort">Open-Ended</th>
-<th onclick="sort(4)" title="Click to sort">Total</th>
-<th onclick="sort(5)" title="Click to sort">%</th>
-<th onclick="sort(6)" title="Click to sort">Date</th>
-</tr>
-</thead>
-<tbody id="tbody">
-<tr><td colspan="7" class="loading">Loading leaderboard data...</td></tr>
-</tbody>
-</table>
+  <table id="leaderboard">
+    <thead>
+      <tr>
+        <th onclick="sort(0)" title="Click to sort">#</th>
+        <th onclick="sort(1)" title="Click to sort">Model</th>
+        <th onclick="sort(2)" title="Click to sort">Yes/No</th>
+        <th onclick="sort(3)" title="Click to sort">Open-Ended</th>
+        <th onclick="sort(4)" title="Click to sort">Total</th>
+        <th onclick="sort(5)" title="Click to sort">%</th>
+        <th onclick="sort(6)" title="Click to sort">Date</th>
+      </tr>
+    </thead>
+    <tbody id="tbody">
+      <tr><td colspan="7" class="loading">Loading leaderboard data...</td></tr>
+    </tbody>
+  </table>
 </div>
+
+<!-- Raw log view -->
+<div id="raw-log-container" style="display:none;margin-top:1.5rem;">
+  <h2 style="margin-bottom:1rem;font-size:1.25rem;">Raw Benchmark Log</h2>
+  <pre id="raw-log" style="white-space:pre-wrap;background:#111;padding:1rem;border-radius:8px;border:1px solid #38383a;max-height:70vh;overflow:auto;"></pre>
+</div>
+
 <footer>
-<p class="small">Scores represent AI judge's evaluation, not universal truth. Higher scores = better odds of finding a model you like, not perfection.</p>
+  <p class="small">Scores represent AI judge's evaluation, not universal truth. Higher scores = better odds of finding a model you like, not perfection.</p>
 </footer>
 </div>
+
 <script>
-let data=[],sortCol=0,sortAsc=!1;
+let data = [], sortCol = 0, sortAsc = !1;
+
+function slugify(name){
+  if (!name) return "";
+  let s = name.replace(/\//g, "-");
+  s = s.replace(/[^a-zA-Z0-9_-]/g, "");
+  return s.toLowerCase();
+}
 
 async function loadLeaderboard(){
   try{
-    const e=await fetch("results.json");
-    if(!e.ok)throw new Error(`HTTP ${e.status}`);
-    const t=await e.json();
-    data=t.leaderboard||[],
-    document.getElementById("count").textContent=t.metadata?.total_models||data.length;
-    const o=t.metadata?.last_updated;
-    o?document.getElementById("updated").textContent=new Date(o).toLocaleDateString():document.getElementById("updated").textContent="Unknown",
-    renderTable()
-  }catch(e){
-    console.error("Failed to load leaderboard:",e),
-    showError("Failed to load leaderboard data. Please try again later.")
+    const res = await fetch("results.json");
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+
+    data = json.leaderboard || [];
+    document.getElementById("count").textContent = json.metadata?.total_models || data.length;
+
+    const last = json.metadata?.last_updated;
+    document.getElementById("updated").textContent = last ? new Date(last).toLocaleDateString() : "Unknown";
+
+    const params = new URLSearchParams(window.location.search);
+    const rawParam = params.get("raw");
+
+    if (rawParam){
+      renderRaw(rawParam);
+    } else {
+      renderTable();
+    }
+  }catch(err){
+    console.error("Failed to load leaderboard:", err);
+    showError("Failed to load leaderboard data. Please try again later.");
   }
 }
 
 function renderTable(){
-  const e=document.getElementById("tbody");
-  0===data.length?e.innerHTML='<tr><td colspan="7" class="loading">No models tested yet.</td></tr>':
-  e.innerHTML=data.map((e,t)=>{
-    const o=(e.percentage||e.total_score/e.max_score*100).toFixed(1),
-          a=e.timestamp?new Date(e.timestamp).toLocaleDateString():"-";
-    return`<tr class="rank-${t+1}"><td><strong>${e.rank||t+1}</strong></td><td>${escapeHtml(e.display_name||e.model_name)}</td><td>${e.yes_no_score}/${e.yes_no_max||25}</td><td>${e.open_ended_score}/${e.open_ended_max||300}</td><td><strong>${e.total_score}/${e.max_score||325}</strong></td><td>${o}%</td><td>${a}</td></tr>`
-  }).join("")
+  const tbody = document.getElementById("tbody");
+  const tableContainer = document.querySelector(".table-container");
+  const rawContainer = document.getElementById("raw-log-container");
+
+  tableContainer.style.display = "";
+  if (rawContainer) rawContainer.style.display = "none";
+
+  if (data.length === 0){
+    tbody.innerHTML = '<tr><td colspan="7" class="loading">No models tested yet.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.map((e, i) => {
+    const perc = (e.percentage || e.total_score / e.max_score * 100).toFixed(1);
+    const date = e.timestamp ? new Date(e.timestamp).toLocaleDateString() : "-";
+    const display = e.display_name || e.model_name;
+    const slug = slugify(display);
+
+    // "View log" link under model name
+    const modelCell = `${escapeHtml(display)}<br><a href="?raw=${slug}" style="font-size:0.8em;color:var(--accent);text-decoration:none;">view log</a>`;
+
+    return `<tr class="rank-${i+1}">
+      <td><strong>${e.rank || i+1}</strong></td>
+      <td>${modelCell}</td>
+      <td>${e.yes_no_score}/${e.yes_no_max || 25}</td>
+      <td>${e.open_ended_score}/${e.open_ended_max || 300}</td>
+      <td><strong>${e.total_score}/${e.max_score || 325}</strong></td>
+      <td>${perc}%</td>
+      <td>${date}</td>
+    </tr>`;
+  }).join("");
 }
 
-function sort(e){
-  const t=["rank","display_name","yes_no_score","open_ended_score","total_score","percentage","timestamp"];
-  sortCol===e?sortAsc=!sortAsc:(sortCol=e,sortAsc=!1);
-  const o=t[e];
-  data.sort((e,t)=>{
-    let a=e[o]??"",r=t[o]??"";
-    "timestamp"===o&&(a=new Date(a).getTime()||0,r=new Date(r).getTime()||0),
-    "percentage"===o&&!a&&e.total_score&&e.max_score&&(a=e.total_score/e.max_score*100,r=t.total_score/t.max_score*100);
-    return"string"==typeof a&&"string"==typeof r?sortAsc?a.localeCompare(r,void 0,{sensitivity:"base"}):r.localeCompare(a,void 0,{sensitivity:"base"}):sortAsc?a-r:r-a
-  }),
-  renderTable()
+// Raw log render when ?raw=... is present
+function renderRaw(rawParam){
+  const tableContainer = document.querySelector(".table-container");
+  const rawContainer = document.getElementById("raw-log-container");
+  const rawPre = document.getElementById("raw-log");
+
+  tableContainer.style.display = "none";
+  rawContainer.style.display = "";
+
+  const headerP = document.querySelector("header p");
+  if (headerP) headerP.textContent = "Raw benchmark log";
+
+  if (!data.length){
+    rawPre.textContent = "No models found.";
+    return;
+  }
+
+  // rawParam may be "slug" or "slug_timestamp"
+  const baseSlug = rawParam.split("_")[0].toLowerCase();
+
+  let entry = data.find(e => slugify(e.display_name || e.model_name) === baseSlug);
+
+  // fallback: latest entry if exact slug not found
+  if (!entry){
+    entry = data.slice().sort((a,b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0];
+  }
+
+  if (!entry || !entry.raw_log){
+    rawPre.textContent = "No raw log available for this entry.";
+  } else {
+    rawPre.textContent = entry.raw_log;
+  }
 }
 
-function showError(e){
-  document.getElementById("tbody").innerHTML=`<tr><td colspan="7" class="loading" style="color:#ff453a;">${escapeHtml(e)}</td></tr>`
+function sort(col){
+  const keys = ["rank","display_name","yes_no_score","open_ended_score","total_score","percentage","timestamp"];
+  sortCol === col ? sortAsc = !sortAsc : (sortCol = col, sortAsc = !1);
+  const key = keys[col];
+
+  data.sort((a,b)=>{
+    let x = a[key] ?? "", y = b[key] ?? "";
+    if (key === "timestamp"){
+      x = new Date(x).getTime() || 0;
+      y = new Date(y).getTime() || 0;
+    }
+    if (key === "percentage" && !x && a.total_score && a.max_score){
+      x = a.total_score / a.max_score * 100;
+      y = b.total_score / b.max_score * 100;
+    }
+    if (typeof x === "string" && typeof y === "string"){
+      return sortAsc ? x.localeCompare(y, undefined, {sensitivity:"base"}) : y.localeCompare(x, undefined, {sensitivity:"base"});
+    }
+    return sortAsc ? x - y : y - x;
+  });
+
+  renderTable();
 }
 
-function escapeHtml(e){
-  if("string"!=typeof e)return e;
-  const t=document.createElement("div");
-  return t.textContent=e,t.innerHTML
+function showError(msg){
+  document.getElementById("tbody").innerHTML =
+    `<tr><td colspan="7" class="loading" style="color:#ff453a;">${escapeHtml(msg)}</td></tr>`;
+}
+
+function escapeHtml(s){
+  if (typeof s !== "string") return s;
+  const div = document.createElement("div");
+  div.textContent = s;
+  return div.innerHTML;
 }
 
 function setGitHubLinks(){
-  const e=window.location.hostname;
-  if(!e.endsWith(".github.io"))return void(document.getElementById("github-link").style.display="none");
-  const t=e.replace(".github.io",""),
-        o=(window.location.pathname.match(/^\/([^\/]+)/)||[])[1]||"RP-Leaderboard",
-        a=`https://github.com/${t}/${o}`;
-  document.getElementById("github-link").href=a
+  const host = window.location.hostname;
+  if (!host.endsWith(".github.io")){
+    document.getElementById("github-link").style.display = "none";
+    return;
+  }
+  const user = host.replace(".github.io","");
+  const repo = (window.location.pathname.match(/^\/([^\/]+)/) || [])[1] || "RP-Leaderboard";
+  const href = `https://github.com/${user}/${repo}`;
+  document.getElementById("github-link").href = href;
 }
 
-document.addEventListener("DOMContentLoaded",()=>{setGitHubLinks(),loadLeaderboard()});
+document.addEventListener("DOMContentLoaded", () => {
+  setGitHubLinks();
+  loadLeaderboard();
+});
 </script>
 </body>
 </html>
