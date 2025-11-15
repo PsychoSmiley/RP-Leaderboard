@@ -1,0 +1,31 @@
+name: Request Model Benchmark
+description: Request a model to be added to the RP Leaderboard
+title: "[Model Request] "
+labels: ["model-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Request a Model Benchmark
+
+        Browse models: [openrouter.ai/models](https://openrouter.ai/models) (or custom local HF model ID)
+
+        **Note:** Owner will review and approve requests.
+
+  - type: input
+    id: model_name
+    attributes:
+      label: Model Name
+      description: OpenRouter model ID
+      placeholder: "google/gemini-2.5-flash-exp:free"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reason
+    attributes:
+      label: Reason (optional)
+      description: Why do you want this model benchmarked?
+      placeholder: "New uncensored model, claims better RP..."
+    validations:
+      required: false
