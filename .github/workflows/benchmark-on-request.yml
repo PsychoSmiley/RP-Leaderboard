@@ -1,0 +1,404 @@
+name: Benchmark Model on Request
+
+on:
+  issues:
+    types: [labeled, opened]
+
+jobs:
+  check-bypass:
+    if: github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    outputs:
+      approved: ${{ steps.check.outputs.approved }}
+    permissions:
+      issues: write
+    steps:
+      - name: Check if bypass enabled
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.issue.labels.map(l => l.name);
+            const title = context.payload.issue.title || '';
+
+            if (!labels.includes('model-request')) {
+              if (title.startsWith('[Model Request]')) {
+                await github.rest.issues.addLabels({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  labels: ['model-request']
+                });
+              } else {
+                core.setOutput('approved', 'false');
+                return;
+              }
+            }
+
+            const bypassSetting = process.env.BYPASS_ENABLED;
+            if (bypassSetting !== 'true') {
+              core.setOutput('approved', 'false');
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const since = new Date();
+            since.setHours(since.getHours() - 24);
+
+            const issues = await github.rest.issues.listForRepo({
+              owner, repo, state: 'all',
+              labels: 'model-request,bypass',
+              since: since.toISOString()
+            });
+
+            const bypassCount = issues.data.length;
+
+            if (bypassCount >= 2) {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number, owner, repo,
+                body: `⚠️ **Rate limit reached:** 2 requests per day.\n\nPlease come back tomorrow!`
+              });
+              await github.rest.issues.update({
+                issue_number: context.issue.number, owner, repo, state: 'closed'
+              });
+              await github.rest.issues.lock({
+                issue_number: context.issue.number, owner, repo, lock_reason: 'resolved'
+              });
+              core.setOutput('approved', 'false');
+              return;
+            }
+
+            const issueBody = context.payload.issue.body;
+            const modelMatch = issueBody.match(/### Model Name\s+([^\n]+)/);
+            const model = modelMatch ? modelMatch[1].trim() : '';
+
+            await github.rest.issues.addLabels({
+              issue_number: context.issue.number, owner, repo,
+              labels: ['bypass', 'approved']
+            });
+
+            if (model) {
+              await github.rest.issues.update({
+                issue_number: context.issue.number, owner, repo,
+                title: `[Model Request] ${model}`
+              });
+            }
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number, owner, repo,
+              body: `✅ **Auto-approved**\n\nBenchmark will start automatically...\n\n_Auto-approve usage: ${bypassCount + 1}/2 today_`
+            });
+
+            core.setOutput('approved', 'true');
+        env:
+          BYPASS_ENABLED: ${{ vars.BYPASS_ENABLED }}
+
+  benchmark:
+    if: always() && (
+      (github.event.action == 'labeled' && github.event.label.name == 'approved') ||
+      (needs.check-bypass.result == 'success' && needs.check-bypass.outputs.approved == 'true')
+      )
+    needs: [check-bypass]
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      issues: write
+
+    concurrency:
+      group: benchmark-queue
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Extract model info from issue
+        id: extract
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueBody = context.payload.issue.body;
+            const modelMatch = issueBody.match(/### Model Name\s+([^\n]+)/);
+            const model = modelMatch ? modelMatch[1].trim() : '';
+            if (!model) throw new Error('Could not extract model name');
+            core.setOutput('model', model);
+
+      - name: Validate model exists on OpenRouter
+        id: validate_model
+        uses: actions/github-script@v7
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        with:
+          script: |
+            const model = '${{ steps.extract.outputs.model }}';
+            const apiKey = process.env.OPENROUTER_API_KEY;
+
+            try {
+              const response = await fetch('https://openrouter.ai/api/v1/models', {
+                headers: { 'Authorization': `Bearer ${apiKey}` }
+              });
+
+              if (!response.ok) return;
+
+              const data = await response.json();
+              const modelExists = data.data?.some(m => m.id === model);
+
+              if (!modelExists) {
+                const issueLabels = context.payload.issue.labels.map(l => l.name);
+                for (const label of ['bypass', 'approved'].filter(l => issueLabels.includes(l))) {
+                  await github.rest.issues.removeLabel({
+                    issue_number: context.issue.number,
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label
+                  });
+                }
+
+                await github.rest.issues.addLabels({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  labels: ['custom-model']
+                });
+
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: `⚠️ **Model not found on OpenRouter**\n\n\`${model}\` is not available. Check https://openrouter.ai/models\n\nMarked as **custom-model** for manual review.`
+                });
+
+                await github.rest.issues.update({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: `[Custom Model Request] ${model}`
+                });
+
+                core.setFailed('Model not found');
+              }
+            } catch (error) {
+              console.log(`Validation error: ${error.message}`);
+            }
+
+      - name: Check for duplicate
+        id: check_duplicate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const model = '${{ steps.extract.outputs.model }}';
+
+            if (fs.existsSync('results.json')) {
+              try {
+                const data = JSON.parse(fs.readFileSync('results.json', 'utf8'));
+                const exists = data.leaderboard?.some(e => e.model_name === model);
+
+                if (exists) {
+                  const entry = data.leaderboard?.find(e => e.model_name === model);
+                  const leaderboardUrl = `https://${context.repo.owner}.github.io/${context.repo.repo}/`;
+                  await github.rest.issues.createComment({
+                    issue_number: context.issue.number,
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    body: `❌ **Model already tested!**\n\n\`${model}\` is already in the leaderboard.\n\n🔗 [View Leaderboard](${leaderboardUrl})`
+                  });
+
+                  let title = `[Duplicate Model Request] ${model}`;
+                  if (entry) {
+                    title = `[Duplicate Model Request] ${model} - ${entry.percentage}% (Rank #${entry.rank})`;
+                  }
+
+                  await github.rest.issues.update({
+                    issue_number: context.issue.number,
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    title: title,
+                    state: 'closed'
+                  });
+
+                  // Lock duplicate issues
+                  await github.rest.issues.lock({
+                    issue_number: context.issue.number,
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    lock_reason: 'resolved'
+                  });
+
+                  core.setFailed('Duplicate model - already tested');
+                }
+              } catch (error) {
+                console.log(`Failed to parse results.json: ${error.message}`);
+              }
+            }
+
+      - name: Comment starting
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🚀 Starting benchmark for \`${{ steps.extract.outputs.model }}\`...\n\nThis will take ~5 minutes.`
+            });
+
+      - name: Run benchmark
+        id: run_benchmark
+        continue-on-error: true
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE || 'https://openrouter.ai/api/v1' }}
+          JUDGE_ENDPOINT: ${{ secrets.JUDGE_ENDPOINT }}
+        run: |
+          python benchmark.py --model "${{ steps.extract.outputs.model }}" | tee benchmark_log.txt
+
+      - name: Commit and push results
+        if: steps.run_benchmark.outcome == 'success'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add results.json index.html
+          git commit -m "📊 Add benchmark results for ${{ steps.extract.outputs.model }}" || echo "No changes to commit"
+          git push
+
+      - name: Comment benchmark failure
+        if: steps.run_benchmark.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let logSnippet = '';
+
+            // Try to extract the error from benchmark log
+            if (fs.existsSync('benchmark_log.txt')) {
+              const fullLog = fs.readFileSync('benchmark_log.txt', 'utf8');
+              // Extract last 1000 chars or CRITICAL ERROR section
+              const criticalMatch = fullLog.match(/❌ CRITICAL ERROR:[\s\S]*?(?=\n\n|$)/);
+              if (criticalMatch) {
+                logSnippet = '\n\n```\n' + criticalMatch[0] + '\n```';
+              } else {
+                const lines = fullLog.split('\n');
+                logSnippet = '\n\n```\n' + lines.slice(-20).join('\n') + '\n```';
+              }
+            }
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `❌ **Benchmark Failed**\n\nModel: \`${{ steps.extract.outputs.model }}\`\n\nThe benchmark encountered a critical error. This is usually due to:\n- API/infrastructure issues (network, credentials, rate limits)\n- Invalid model name\n- Insufficient credits\n\nThis is **not** a model performance failure.${logSnippet}\n\n💡 You may retry later or contact the maintainer.`
+            });
+
+            await github.rest.issues.update({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[Failed Benchmark] ${{ steps.extract.outputs.model }}`,
+              state: 'closed'
+            });
+
+            await github.rest.issues.lock({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              lock_reason: 'resolved'
+            });
+
+      - name: Read and comment results
+        if: steps.run_benchmark.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const model = '${{ steps.extract.outputs.model }}';
+            const leaderboardUrl = `https://${context.repo.owner}.github.io/${context.repo.repo}/`;
+
+            let resultText = 'No results found';
+            let rawLogLink = '';
+            let entry = null;  // Declare at top level
+
+            if (fs.existsSync('results.json')) {
+              try {
+                const data = JSON.parse(fs.readFileSync('results.json', 'utf8'));
+                entry = data.leaderboard?.find(e => e.model_name === model);
+
+                if (entry) {
+                  resultText = `**📊 Results:**\n- **Rank:** \`#${entry.rank}\`\n- **Total Score:** ${entry.total_score}/${entry.max_score} (${entry.percentage}%)\n- **Yes/No:** ${entry.yes_no_score}/${entry.yes_no_max}\n- **Open-ended:** ${entry.open_ended_score}/${entry.open_ended_max}`;
+
+                  // Generate raw log link using sanitized display_name and timestamp
+                  const sanitizedName = entry.display_name.replace(/[^a-zA-Z0-9_-]/g, '');
+                  const timestamp = entry.timestamp.replace(/[^0-9]/g, '').substring(0, 14); // YYYYMMDDHHMMSS
+                  rawLogLink = `\n\n📋 [View Raw Log](${leaderboardUrl}?raw=${sanitizedName}_${timestamp})`;
+                }
+              } catch (error) {
+                console.log(`Failed to parse results.json: ${error.message}`);
+              }
+            }
+
+            const judgeModel = process.env.JUDGE_MODEL || 'claude-sonnet-4.5';
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `✅ **Benchmark Complete!**\n\nModel: \`${model}\` | Judge: \`${judgeModel}\`\n\n${resultText}\n\n🔗 [View Leaderboard](${leaderboardUrl})${rawLogLink}`
+            });
+
+            // Update issue title with results
+            let newTitle = '[Model Request]';
+            if (entry) {
+              newTitle = `[Model Request] ${model} - ${entry.percentage}% (Rank #${entry.rank})`;
+            } else {
+              newTitle = `[Model Request] ${model}`;
+            }
+
+            try {
+              await github.rest.issues.update({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: newTitle,
+                state: 'closed'
+              });
+              console.log(`✅ Issue closed and titled: ${newTitle}`);
+
+              // Lock the issue to archive completed benchmarks
+              await github.rest.issues.lock({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                lock_reason: 'resolved'
+              });
+              console.log(`🔒 Issue locked as resolved`);
+            } catch (error) {
+              console.error('❌ Failed to update issue:', error);
+              core.setFailed(`Could not close issue: ${error.message}`);
+            }
+
+      - name: Remove approved label
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.issues.removeLabel({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'approved'
+              });
+            } catch (e) {}
