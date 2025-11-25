@@ -29,4 +29,4 @@ Judge by `anthropic/claude-sonnet-4.5` on total of 325 points: 25 Yes/No (temp 0
 - To evaluate E/RP we need to understand what defines it and know common issues to set specific criteria, but it isn't academic:
   - ✍️ Scope: E/RP scores turn-based POV responses vs EQ-Bench, where the focus is third-person stories.
   - 🔎 Targets: to found popular community models (e.g., Mythomax, still subject to preference/style/length biases-won't guarantee your taste).
-  - ⚠️ Limitations: no multi-turn or long-term recall for simplicity, but open questions still lean toward the first message of a character instead of a full story; some models may exploit scoring criteria; judge uses a jailbreak for NSFW evaluation and may still refuse.
+  - ⚠️ Limitations: no multi-turn or long-term recall for simplicity, but open questions still lean toward the first message of a character instead of a full story; some models may exploit scoring criteria; Judges as jailbreaks for NSFW evaluation are not used, as they may still refuse and be biased; Models refusing open-end questions are receiving worse scores..
