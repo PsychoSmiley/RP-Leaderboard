@@ -141,9 +141,10 @@ jobs:
         uses: actions/github-script@v7
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          MODEL: ${{ steps.extract.outputs.model }}
         with:
           script: |
-            const model = '${{ steps.extract.outputs.model }}';
+            const model = process.env.MODEL;
             const apiKey = process.env.OPENROUTER_API_KEY;
 
             try {
@@ -197,10 +198,12 @@ jobs:
       - name: Check for duplicate
         id: check_duplicate
         uses: actions/github-script@v7
+        env:
+          MODEL: ${{ steps.extract.outputs.model }}
         with:
           script: |
             const fs = require('fs');
-            const model = '${{ steps.extract.outputs.model }}';
+            const model = process.env.MODEL;
 
             if (fs.existsSync('results.json')) {
               try {
@@ -247,13 +250,15 @@ jobs:
 
       - name: Comment starting
         uses: actions/github-script@v7
+        env:
+          MODEL: ${{ steps.extract.outputs.model }}
         with:
           script: |
             await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `🚀 Starting benchmark for \`${{ steps.extract.outputs.model }}\`...\n\nThis will take ~5 minutes.`
+              body: `🚀 Starting benchmark for \`${process.env.MODEL}\`...\n\nThis will take ~5 minutes.`
             });
 
       - name: Run benchmark
@@ -263,21 +268,26 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE || 'https://openrouter.ai/api/v1' }}
           JUDGE_ENDPOINT: ${{ secrets.JUDGE_ENDPOINT }}
+          MODEL: ${{ steps.extract.outputs.model }}
         run: |
-          python benchmark.py --model "${{ steps.extract.outputs.model }}" | tee benchmark_log.txt
+          python benchmark.py --model "$MODEL" | tee benchmark_log.txt
 
       - name: Commit and push results
         if: steps.run_benchmark.outcome == 'success'
+        env:
+          MODEL: ${{ steps.extract.outputs.model }}
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add results.json index.html
-          git commit -m "📊 Add benchmark results for ${{ steps.extract.outputs.model }}" || echo "No changes to commit"
+          git commit -m "📊 Add benchmark results for $MODEL" || echo "No changes to commit"
           git push
 
       - name: Comment benchmark failure
         if: steps.run_benchmark.outcome == 'failure'
         uses: actions/github-script@v7
+        env:
+          MODEL: ${{ steps.extract.outputs.model }}
         with:
           script: |
             const fs = require('fs');
@@ -300,14 +310,14 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `❌ **Benchmark Failed**\n\nModel: \`${{ steps.extract.outputs.model }}\`\n\nThe benchmark encountered a critical error. This is usually due to:\n- API/infrastructure issues (network, credentials, rate limits)\n- Invalid model name\n- Insufficient credits\n\nThis is **not** a model performance failure.${logSnippet}\n\n💡 You may retry later or contact the maintainer.`
+              body: `❌ **Benchmark Failed**\n\nModel: \`${process.env.MODEL}\`\n\nThe benchmark encountered a critical error. This is usually due to:\n- API/infrastructure issues (network, credentials, rate limits)\n- Invalid model name\n- Insufficient credits\n\nThis is **not** a model performance failure.${logSnippet}\n\n💡 You may retry later or contact the maintainer.`
             });
 
             await github.rest.issues.update({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `[Failed Benchmark] ${{ steps.extract.outputs.model }}`,
+              title: `[Failed Benchmark] ${process.env.MODEL}`,
               state: 'closed'
             });
 
@@ -321,10 +331,12 @@ jobs:
       - name: Read and comment results
         if: steps.run_benchmark.outcome == 'success'
         uses: actions/github-script@v7
+        env:
+          MODEL: ${{ steps.extract.outputs.model }}
         with:
           script: |
             const fs = require('fs');
-            const model = '${{ steps.extract.outputs.model }}';
+            const model = process.env.MODEL;
             const leaderboardUrl = `https://${context.repo.owner}.github.io/${context.repo.repo}/`;
 
             let resultText = 'No results found';
